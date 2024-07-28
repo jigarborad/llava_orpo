@@ -14,7 +14,13 @@ from transformers.trainer import (
 )
 import torch.nn.functional as F
 from typing import Dict, Union, Any, Tuple, List, Optional
-
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+from transformers.modeling_utils import unwrap_model, WEIGHTS_NAME
+from transformers.utils import SAFE_WEIGHTS_NAME
+try:
+    from safetensors.torch import save_file as safe_save_file
+except ImportError:
+    safe_save_file = None
 def maybe_zero_3(param, ignore_status=False, name=None):
     from deepspeed import zero
     from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
@@ -287,11 +293,23 @@ class LLaVaORPOTrainer(LLaVATrainer):
             policy_win_logps, policy_rej_logps
         )
 
-        nll_loss = self.compute_nll_loss(policy_win_logits, win_labels)
-        loss = self.args.nll_loss_weight * nll_loss - losses.mean()
-
+        nll_loss = self.compute_nll_loss(concatenated_logits[:win_labels.shape[0]], win_labels[:win_labels.shape[0]])
+        loss = nll_loss - losses.mean()
+        
         train_test = 'train' if model.training else 'eval'
-        metrics = self.compute_metrics(policy_win_logps, policy_rej_logps, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen, nll_loss.item(), train_test)
+        reward_accuracies = (chosen_rewards > rejected_rewards).float()
+        metrics = {
+            f'rewards_{train_test}/chosen': chosen_rewards.mean().item(),
+            f'rewards_{train_test}/rejected': rejected_rewards.mean().item(),
+            f'rewards_{train_test}/accuracies': reward_accuracies.mean().item(),
+            f'rewards_{train_test}/margins': (chosen_rewards - rejected_rewards).mean().item(),
+            f'logps_{train_test}/rejected': policy_rej_logps.mean().item(),
+            f'logps_{train_test}/chosen': policy_win_logps.mean().item(),
+            f'log_odds_{train_test}/ratio': log_odds_ratio,
+            f'log_odds_{train_test}/chosen': log_odds_chosen,
+            f'loss_{train_test}/nll': nll_loss,
+        }
+        #metrics = self.compute_metrics(policy_win_logps, policy_rej_logps, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen, nll_loss.item(), train_test)
         self.log(metrics)
 
         return loss
@@ -304,13 +322,9 @@ class LLaVaORPOTrainer(LLaVATrainer):
             images=images,
             **kwargs
         )
-        print("Len of logits:", output.logits.size(1))
-        print("Len of labels:", labels.size(1))
-        print("difference:", output.logits.size(1)-labels.size(1))
-        return output.logits[:, output.logits.size(1)-labels.size(1), :]  # Cutting off the first 575 tokens as in the original code
+        return output.logits 
 
     def get_batch_logps(self, logits: torch.FloatTensor, labels: torch.LongTensor) -> torch.FloatTensor:
-        assert logits.shape[:-1] == labels.shape
 
         labels = labels[:, 1:].clone()
         logits = logits[:, :-1, :]
@@ -332,32 +346,87 @@ class LLaVaORPOTrainer(LLaVATrainer):
         )
         sig_ratio = F.sigmoid(log_odds)
         ratio = torch.log(sig_ratio)
-        losses = self.args.beta * ratio
+        losses = self.args.orpo_beta * ratio
 
-        chosen_rewards = self.args.beta * policy_chosen_logps.detach()
-        rejected_rewards = self.args.beta * policy_rejected_logps.detach()
+        chosen_rewards = self.args.orpo_beta * policy_chosen_logps.detach()
+        rejected_rewards = self.args.orpo_beta * policy_rejected_logps.detach()
 
         return losses, chosen_rewards, rejected_rewards, torch.mean(ratio).item(), torch.mean(log_odds).item()
 
     def compute_nll_loss(self, logits: torch.FloatTensor, labels: torch.LongTensor) -> torch.FloatTensor:
-        # Shift logits and labels for non-encoder-decoder models
-        logits = logits[:, :-1, :].contiguous()
-        labels = labels[:, 1:].contiguous()
+        seq_length = labels.size(1)
+        logits = logits[:, -seq_length:, :].contiguous()
         
+        # Shift logits and labels for next-token prediction
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        
+        # Flatten the tensors
+        flat_shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+        flat_shift_labels = shift_labels.view(-1)
+        
+        # Compute loss
         loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-        return loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+        return loss_fct(flat_shift_logits, flat_shift_labels)
+        
+    def _save_checkpoint(self, model, trial, metrics=None):
+        # Convert any non-leaf tensors in the trainer state to detached tensors
+        from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+        for key, value in self.state.__dict__.items():
+            if isinstance(value, torch.Tensor) and not value.is_leaf:
+                setattr(self.state, key, value.detach().clone())
+        
+        checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+        run_dir = self._get_output_dir(trial=trial)
+        output_dir = os.path.join(run_dir, checkpoint_folder)
 
-    def compute_metrics(self, policy_win_logps, policy_rej_logps, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen, nll_loss, train_test):
-        reward_accuracies = (chosen_rewards > rejected_rewards).float()
-        metrics = {
-            f'rewards_{train_test}/chosen': chosen_rewards.mean().item(),
-            f'rewards_{train_test}/rejected': rejected_rewards.mean().item(),
-            f'rewards_{train_test}/accuracies': reward_accuracies.mean().item(),
-            f'rewards_{train_test}/margins': (chosen_rewards - rejected_rewards).mean().item(),
-            f'logps_{train_test}/rejected': policy_rej_logps.mean().item(),
-            f'logps_{train_test}/chosen': policy_win_logps.mean().item(),
-            f'log_odds_{train_test}/ratio': log_odds_ratio,
-            f'log_odds_{train_test}/chosen': log_odds_chosen,
-            f'loss_{train_test}/nll': nll_loss,
-        }
-        return metrics
+        if self.args.should_save:
+            self._save(output_dir)
+        
+        if self.args.should_save:
+            self._save_checkpoint_for_llava(model, trial, metrics, output_dir)
+
+    def _save_checkpoint_for_llava(self, model, trial, metrics, output_dir):
+        # Save model configuration
+        from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+        from transformers.modeling_utils import unwrap_model
+        unwrapped_model = unwrap_model(model)
+        unwrapped_model.config.save_pretrained(output_dir)
+        
+        # Save tokenizer
+        if self.tokenizer is not None:
+            self.tokenizer.save_pretrained(output_dir)
+        
+        # Save training arguments
+        torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
+        
+        # Only save Adapter if specified
+        if getattr(self.args, 'tune_mm_mlp_adapter', False):
+            keys_to_match = ['mm_projector', 'vision_resampler']
+            if getattr(self.args, "use_im_start_end", False):
+                keys_to_match.extend(['embed_tokens', 'embed_in'])
+            
+            weight_to_save = get_mm_adapter_state_maybe_zero_3(unwrapped_model.named_parameters(), keys_to_match)
+            if self.args.local_rank == 0 or self.args.local_rank == -1:
+                torch.save(weight_to_save, os.path.join(output_dir, 'mm_projector.bin'))
+                
+                # Save adapter configuration
+                if hasattr(unwrapped_model, 'get_adapter_config'):
+                    adapter_config = unwrapped_model.get_adapter_config()
+                    adapter_config.save_pretrained(output_dir)
+        else:
+            # Save the full model
+            state_dict = unwrapped_model.state_dict()
+            self._save_state_dict(state_dict, output_dir)
+        
+        # Save README if it doesn't exist
+        readme_path = os.path.join(output_dir, "README.md")
+        if not os.path.exists(readme_path):
+            with open(readme_path, "w") as f:
+                f.write(f"# LLaVA-ORPO Model\n\nThis is a checkpoint of a LLaVA-ORPO model trained with the following arguments:\n\n```\n{self.args}\n```")
+
+    def _save_state_dict(self, state_dict, output_dir):
+        if self.args.save_safetensors and safe_save_file is not None:
+            safe_save_file(state_dict, os.path.join(output_dir, SAFE_WEIGHTS_NAME), metadata={"format": "pt"})
+        else:
+            torch.save(state_dict, os.path.join(output_dir, WEIGHTS_NAME))

@@ -75,11 +75,9 @@ class DataArguments:
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
 
-    orpo_beta: float = 0.5
-    orpo_token_weight: float = 3.0 # 5.0 in the RLHF-V paper for fine-grained ORPO
-
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
+    push_to_hub: bool= False
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     remove_unused_columns: bool = field(default=False)
@@ -118,6 +116,7 @@ class TrainingArguments(transformers.TrainingArguments):
             'help': 'LM for language modeling. ORPO for direct preference optimization'
         }
     )
+    orpo_beta: float = 0.1
     orpo_use_average: bool = True
     orpo_token_weighted: bool = False
 
@@ -808,7 +807,6 @@ def SFT_collator_fn(instances, pad_token_id):
         labels=labels,
         attention_mask=input_ids.ne(pad_token_id),
     )
-    print(f'Inside SFT_collator_fn: {instances[0].keys()}')
     if 'image' in instances[0]:
         images = [instance['image'] for instance in instances]
         if all(x is not None and x.shape == images[0].shape for x in images):
@@ -845,8 +843,6 @@ def preference_collator_fn(instances, pad_token_id):
             rej_input_ids=rej_batch['input_ids'],
             win_labels=win_batch['labels'],
             rej_labels=rej_batch['labels'],
-            win_attention_mask=win_batch['attention_mask'],
-            rej_attention_mask=rej_batch['attention_mask'],
         )
         return batch
     batch = dict(
@@ -857,8 +853,6 @@ def preference_collator_fn(instances, pad_token_id):
         rej_input_ids=rej_batch['input_ids'],
         win_labels=win_batch['labels'],
         rej_labels=rej_batch['labels'],
-        win_attention_mask=win_batch['attention_mask'],
-        rej_attention_mask=rej_batch['attention_mask'],
         images=win_batch['images'],
     )
     return batch
@@ -880,7 +874,7 @@ class ORPODataset(Dataset):
 
     def __getitem__(self, i):
         source: dict = self.list_data_dict[i]
-        rej_data_dict, win_data_dict = encode_multimodal_preference_sample(source, self.tokenizer, self.multimodal_cfg, self.data_dir)
+        rej_data_dict, win_data_dict = encode_multimodal_preference_sample(source, self.tokenizer, self.multimodal_cfg)
         return rej_data_dict, win_data_dict
 
 
@@ -923,7 +917,6 @@ def encode_multimodal_preference_sample(source, tokenizer, multimodal_cfg):
             source['question'] = ast.literal_eval(source['question'])
         win_conv = copy.deepcopy([source['question'], source["chosen"]])
         rej_conv = copy.deepcopy([source['question'], source["rejected"]])
-    print(f"Win conv: {win_conv}")
     if 'image' in source:
         # Here assume the image is already loaded and not a path, which can change
         processor = multimodal_cfg['image_processor']
@@ -931,7 +924,6 @@ def encode_multimodal_preference_sample(source, tokenizer, multimodal_cfg):
             # When image is just a filename we load it
             image_folder = multimodal_cfg['image_folder']
             image = Image.open(os.path.join(image_folder, source['image'])).convert('RGB')
-            print("Image is a string, loading from folder")
         else:
             image = source['image']
         # image = multimodal_cfg['image_processor'](image)
@@ -966,15 +958,13 @@ def encode_multimodal_preference_sample(source, tokenizer, multimodal_cfg):
 @dataclass
 class DataCollatorForORPODataset(object):
     tokenizer: transformers.PreTrainedTokenizer
-    beta: float
-    mod_token_weight: float
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         batch = preference_collator_fn(instances, self.tokenizer.pad_token_id)
 
         rej_instances, win_instances = list(zip(*instances))
 
-        batch['beta'] = self.beta
+        
         for ins in win_instances:
             assert len(ins['input_ids']) == len(ins['labels'])
         for ins in rej_instances:
@@ -990,10 +980,11 @@ def make_orpo_data_module(tokenizer, data_args):
             use_im_start_end=getattr(data_args, "mm_use_im_start_end", False),
             image_processor=getattr(data_args, "image_processor", None),
             data_path=getattr(data_args, "data_path"),
+            image_folder=getattr(data_args, "image_folder"),
         ),
     )
     print(f'Train data size is {len(train_dataset)}', flush=True)
-    data_collator = DataCollatorForORPODataset(tokenizer=tokenizer, beta=data_args.orpo_beta, mod_token_weight=data_args.orpo_token_weight)
+    data_collator = DataCollatorForORPODataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
                 data_collator=data_collator)
@@ -1036,6 +1027,15 @@ def train(attn_implementation=None):
                 cache_dir=training_args.cache_dir,
                 **bnb_model_from_pretrained_args
             )
+        elif 'mistral' in model_args.model_name_or_path:
+                #tokenizer = AutoTokenizer.from_pretrained(model_path)
+                model = LlavaMistralForCausalLM.from_pretrained(
+                    model_args.model_name_or_path,
+                    cache_dir=training_args.cache_dir,
+                    attn_implementation=attn_implementation,
+                    torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                    **bnb_model_from_pretrained_args
+                )
         else:
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
@@ -1089,6 +1089,13 @@ def train(attn_implementation=None):
         model = get_peft_model(model, lora_config)
 
     if 'mpt' in model_args.model_name_or_path:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            model_max_length=training_args.model_max_length,
+            padding_side="right"
+        )
+    elif 'mistral' in model_args.model_name_or_path:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
@@ -1168,10 +1175,9 @@ def train(attn_implementation=None):
                 if hasattr(module, 'weight'):
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
-
-    data_module = make_supervised_data_module(tokenizer=tokenizer,
-                                              data_args=data_args)
+    print("training_args.task: ",training_args.task)
     if training_args.task == 'LM':
+        print("Inside LM Trainer")
         data_module = make_supervised_data_module(tokenizer=tokenizer,
                                                 data_args=data_args)
         trainer = LLaVATrainer(model=model,
@@ -1179,6 +1185,7 @@ def train(attn_implementation=None):
                         args=training_args,
                         **data_module)
     elif training_args.task == 'ORPO':
+        print("Inside ORPO Trainer")
         data_module = make_orpo_data_module(tokenizer=tokenizer,
                                             data_args=data_args)
         trainer = LLaVaORPOTrainer(model=model,
@@ -1186,7 +1193,7 @@ def train(attn_implementation=None):
                         args=training_args,
                         **data_module)
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
+        trainer.train(resume_from_checkpoint=False)
     else:
         trainer.train()
     trainer.save_state()

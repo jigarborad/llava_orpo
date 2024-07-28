@@ -3,17 +3,19 @@
 # Model Name: llava-lora-orpo-beta-0.1-lr-5e-5
 # Beta: 0.1
 # Learning Rate: 5e-5
-DATA_PATH=/home/ubuntu/latest_llava/LLaVA/playground/data/dpo/0105_self-sampled/data_noisy_experiment/subset_flipped_chosen_rejected_50%.json
-IMAGE_FOLDER=./LLaVA/playground/data # TODO: Mkae sure to change this to the correct path
+DATA_PATH=playground/data/RLAIF-V-Dataset/RLAIF-V-Dataset_data.json
+IMAGE_FOLDER=playground/data/RLAIF-V-Dataset/ # TODO: Mkae sure to change this to the correct path
 run_name=llava-1.6-7b-orpo
 ouput_dir=./checkpoints/${run_name}
 # Notice that I am loading the latest model checkopint 
 deepspeed llava/train/train_mem.py \
-    --lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr 2e-5 \
-    --deepspeed ./scripts/zero3.json \
+    --lora_enable True --lora_r 16 --lora_alpha 32 --mm_projector_lr 2e-5 \
+    --deepspeed ./scripts/zero3_offload.json \
     --model_name_or_path liuhaotian/llava-v1.6-mistral-7b \
     --version v1 \
-    --task ORPO --orpo_use_average False --orpo_beta 0.1 \
+    --task ORPO \
+    --orpo_use_average False \
+    --orpo_beta 0.1 \
     --data_path ${DATA_PATH} \
     --image_folder ${IMAGE_FOLDER} \
     --vision_tower openai/clip-vit-large-patch14-336 \
@@ -25,13 +27,13 @@ deepspeed llava/train/train_mem.py \
     --group_by_modality_length False \
     --bf16 True \
     --output_dir ${ouput_dir} \
-    --num_train_epochs 3 \
-    --per_device_train_batch_size 8 \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 4 \
+    --gradient_accumulation_steps 1 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 500 \
+    --save_steps 10 \
     --save_total_limit 1 \
     --learning_rate 5e-5\
     --is_multimodal True \
@@ -45,5 +47,4 @@ deepspeed llava/train/train_mem.py \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \
     --report_to wandb \
-    --bits 4\
     --run_name ${run_name} \
