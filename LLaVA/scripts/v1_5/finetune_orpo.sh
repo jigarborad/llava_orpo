@@ -5,7 +5,7 @@
 # Learning Rate: 5e-5
 DATA_PATH=playground/data/RLAIF-V-Dataset/RLAIF-V-Dataset_data.json
 IMAGE_FOLDER=playground/data/RLAIF-V-Dataset/ # TODO: Mkae sure to change this to the correct path
-run_name=llava-1.6-7b-orpo
+run_name=llava-v1.6-mistral-7b-orpo-lora
 ouput_dir=./checkpoints/${run_name}
 # Notice that I am loading the latest model checkopint 
 deepspeed llava/train/train_mem.py \

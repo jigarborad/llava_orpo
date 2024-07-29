@@ -77,7 +77,6 @@ class DataArguments:
 
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
-    push_to_hub: bool= False
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     remove_unused_columns: bool = field(default=False)
@@ -117,8 +116,6 @@ class TrainingArguments(transformers.TrainingArguments):
         }
     )
     orpo_beta: float = 0.1
-    orpo_use_average: bool = True
-    orpo_token_weighted: bool = False
 
 def maybe_zero_3(param, ignore_status=False, name=None):
     from deepspeed import zero
@@ -1196,7 +1193,6 @@ def train(attn_implementation=None):
         trainer.train(resume_from_checkpoint=False)
     else:
         trainer.train()
-    #trainer.save_model()
     trainer.save_state()
 
     model.config.use_cache = True

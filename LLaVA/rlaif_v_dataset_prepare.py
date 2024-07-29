@@ -4,7 +4,6 @@ from PIL import Image
 import io
 import os
 import json
-import base64
 
 def download_and_prepare_dataset(dataset_name, base_dir='playground/data'):
     # Load the dataset from Hugging Face

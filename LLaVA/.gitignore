@@ -13,6 +13,11 @@ dist
 # Data
 !**/alpaca-data-conversation.json
 
+# zero3 files
+!**/zero3.json
+!**/zero3_offload.json
+!**/zero2.json
+
 # Editor
 .idea
 *.swp

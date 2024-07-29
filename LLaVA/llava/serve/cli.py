@@ -27,9 +27,21 @@ def load_image(image_file):
 def main(args):
     # Model
     disable_torch_init()
-
-    model_name = get_model_name_from_path(args.model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(args.model_path, args.model_base, model_name, args.load_8bit, args.load_4bit, device=args.device)
+    model_name = None
+    model_path = args.model_path
+    if model_path.endswith("/"):
+        model_path = model_path[:-1]
+    if model_name is None:
+        model_paths = model_path.split("/")
+        if model_paths[-1].startswith('checkpoint-'):
+            model_name = model_paths[-2] + "_" + model_paths[-1]
+        else:
+            model_name = model_paths[-1]
+    else:
+        model_name = model_name
+    
+    tokenizer, model, image_processor, context_len = load_pretrained_model(
+        args.model_path, args.model_base, model_name, args.load_8bit, args.load_4bit, device=args.device)
 
     if "llama-2" in model_name.lower():
         conv_mode = "llava_llama_2"
