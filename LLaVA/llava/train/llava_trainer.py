@@ -17,10 +17,26 @@ from typing import Dict, Union, Any, Tuple, List, Optional
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from transformers.modeling_utils import unwrap_model, WEIGHTS_NAME
 from transformers.utils import SAFE_WEIGHTS_NAME
+from safetensors.torch import save_file as safe_save_file
+from transformers import TrainerState, TrainerControl
+import numpy as np
+import json
+from transformers import Trainer
+from transformers.trainer import (
+    PREFIX_CHECKPOINT_DIR,
+    is_sagemaker_mp_enabled,
+    logger,
+)
+from transformers.trainer_utils import (
+    ShardedDDPOption,
+)
+from transformers.utils import SAFE_WEIGHTS_NAME, is_torch_tpu_available
 try:
     from safetensors.torch import save_file as safe_save_file
 except ImportError:
     safe_save_file = None
+
+
 def maybe_zero_3(param, ignore_status=False, name=None):
     from deepspeed import zero
     from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
@@ -233,7 +249,7 @@ class LLaVATrainer(Trainer):
 
         return self.optimizer
 
-    def _save_checkpoint(self, model, trial, metrics=None):
+    """def _save_checkpoint(self, model, trial, metrics=None):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):
             from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
             checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
@@ -258,7 +274,7 @@ class LLaVATrainer(Trainer):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):
             pass
         else:
-            super(LLaVATrainer, self)._save(output_dir, state_dict)
+            super(LLaVATrainer, self)._save(output_dir, state_dict)"""
 class LLaVaORPOTrainer(LLaVATrainer):
     def compute_loss(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], return_outputs=False):
         data_dict = inputs
@@ -369,7 +385,7 @@ class LLaVaORPOTrainer(LLaVATrainer):
         loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
         return loss_fct(flat_shift_logits, flat_shift_labels)
         
-    def _save_checkpoint(self, model, trial, metrics=None):
+    """def _save_checkpoint(self, model, trial, metrics=None):
         # Convert any non-leaf tensors in the trainer state to detached tensors
         from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
         for key, value in self.state.__dict__.items():
@@ -429,4 +445,98 @@ class LLaVaORPOTrainer(LLaVATrainer):
         if self.args.save_safetensors and safe_save_file is not None:
             safe_save_file(state_dict, os.path.join(output_dir, SAFE_WEIGHTS_NAME), metadata={"format": "pt"})
         else:
-            torch.save(state_dict, os.path.join(output_dir, WEIGHTS_NAME))
+            torch.save(state_dict, os.path.join(output_dir, WEIGHTS_NAME))"""
+    def _save_checkpoint(self, model, trial, metrics=None):
+        # Determine the checkpoint directory
+        checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+        run_dir = self._get_output_dir(trial=trial)
+        output_dir = os.path.join(run_dir, checkpoint_folder)
+        
+        self.save_model_and_state(output_dir, metrics)
+        
+        # Determine the new best metric / best model checkpoint
+        if metrics is not None and self.args.metric_for_best_model is not None:
+            metric_to_check = self.args.metric_for_best_model
+            if not metric_to_check.startswith("eval_"):
+                metric_to_check = f"eval_{metric_to_check}"
+            metric_value = metrics[metric_to_check]
+
+            operator = np.greater if self.args.greater_is_better else np.less
+            if (
+                self.state.best_metric is None
+                or self.state.best_model_checkpoint is None
+                or operator(metric_value, self.state.best_metric)
+            ):
+                self.state.best_metric = metric_value
+                self.state.best_model_checkpoint = output_dir
+
+        # Maybe delete some older checkpoints.
+        if self.is_world_process_zero():
+            self._rotate_checkpoints(use_mtime=True, output_dir=run_dir)
+
+    def save_model_and_state(self, output_dir: str, metrics: Dict[str, float] = None):
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Save README.md
+        with open(os.path.join(output_dir, "README.md"), "w") as f:
+            f.write("LLaVA-ORPO Model Checkpoint\n\nThis checkpoint contains the model state and training information.")
+
+        # Save config files
+        self.model.config.save_pretrained(output_dir)
+
+        # Save tokenizer files
+        self.tokenizer.save_pretrained(output_dir)
+
+        # Save model weights
+        if safe_save_file is not None:
+            state_dict = self.model.state_dict()
+            state_dict = {k: v.cpu().contiguous() for k, v in state_dict.items()}
+
+            # Check total size
+            total_size = sum(v.numel() * v.element_size() for v in state_dict.values())
+            max_size = 5 * 1024 * 1024 * 1024  # 5GB
+
+            if total_size > max_size:
+                # If larger than 5GB, split into multiple files
+                current_size = 0
+                current_dict = {}
+                file_index = 0
+
+                for k, v in state_dict.items():
+                    v_size = v.numel() * v.element_size()
+                    if current_size + v_size > max_size:
+                        # Save current dict and start a new one
+                        safe_save_file(current_dict, os.path.join(output_dir, f"model-{file_index}.safetensors"))
+                        current_dict = {k: v}
+                        current_size = v_size
+                        file_index += 1
+                    else:
+                        current_dict[k] = v
+                        current_size += v_size
+
+                # Save the last part
+                if current_dict:
+                    safe_save_file(current_dict, os.path.join(output_dir, f"model-{file_index}.safetensors"))
+
+                # Create index file
+                index = {"metadata": {}, "weight_map": {k: f"model-{i}.safetensors" for i, k in enumerate(state_dict.keys())}}
+                with open(os.path.join(output_dir, "model.safetensors.index.json"), "w") as f:
+                    json.dump(index, f, indent=2)
+            else:
+                # If smaller than 5GB, save as a single file
+                safe_save_file(state_dict, os.path.join(output_dir, "model.safetensors"))
+
+        # Save training args
+        torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
+
+        # Save trainer state
+        if metrics is not None:
+            self.state.log_history.append(metrics)
+        self.state.save_to_json(os.path.join(output_dir, "trainer_state.json"))
+
+    def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
+        """
+        Override the save_model method to use our custom saving logic
+        """
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        self.save_model_and_state(output_dir)

@@ -1196,7 +1196,8 @@ def train(attn_implementation=None):
         trainer.train(resume_from_checkpoint=False)
     else:
         trainer.train()
-    trainer.save_state()
+    trainer.save_model()
+    """trainer.save_state()"""
 
     model.config.use_cache = True
 
