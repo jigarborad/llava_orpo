@@ -18,7 +18,7 @@ from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from transformers.modeling_utils import unwrap_model, WEIGHTS_NAME
 from transformers.utils import SAFE_WEIGHTS_NAME
 from safetensors.torch import save_file as safe_save_file
-from transformers import TrainerState, TrainerControl
+#from transformers import TrainerState, TrainerControl
 import numpy as np
 import json
 from transformers import Trainer
@@ -27,10 +27,10 @@ from transformers.trainer import (
     is_sagemaker_mp_enabled,
     logger,
 )
-from transformers.trainer_utils import (
-    ShardedDDPOption,
-)
-from transformers.utils import SAFE_WEIGHTS_NAME, is_torch_tpu_available
+#from transformers.trainer_utils import (
+#    ShardedDDPOption,
+#)
+#from transformers.utils import SAFE_WEIGHTS_NAME, is_torch_tpu_available
 try:
     from safetensors.torch import save_file as safe_save_file
 except ImportError:
@@ -249,7 +249,7 @@ class LLaVATrainer(Trainer):
 
         return self.optimizer
 
-    """def _save_checkpoint(self, model, trial, metrics=None):
+    def _save_checkpoint(self, model, trial, metrics=None):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):
             from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
             checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
@@ -274,7 +274,7 @@ class LLaVATrainer(Trainer):
         if getattr(self.args, 'tune_mm_mlp_adapter', False):
             pass
         else:
-            super(LLaVATrainer, self)._save(output_dir, state_dict)"""
+            super(LLaVATrainer, self)._save(output_dir, state_dict)
 class LLaVaORPOTrainer(LLaVATrainer):
     def compute_loss(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], return_outputs=False):
         data_dict = inputs
@@ -323,7 +323,7 @@ class LLaVaORPOTrainer(LLaVATrainer):
             f'logps_{train_test}/chosen': policy_win_logps.mean().item(),
             f'log_odds_{train_test}/ratio': log_odds_ratio,
             f'log_odds_{train_test}/chosen': log_odds_chosen,
-            f'loss_{train_test}/nll': nll_loss,
+            f'loss_{train_test}/nll': nll_loss.item(),
         }
         #metrics = self.compute_metrics(policy_win_logps, policy_rej_logps, chosen_rewards, rejected_rewards, log_odds_ratio, log_odds_chosen, nll_loss.item(), train_test)
         self.log(metrics)
@@ -446,7 +446,7 @@ class LLaVaORPOTrainer(LLaVATrainer):
             safe_save_file(state_dict, os.path.join(output_dir, SAFE_WEIGHTS_NAME), metadata={"format": "pt"})
         else:
             torch.save(state_dict, os.path.join(output_dir, WEIGHTS_NAME))"""
-    def _save_checkpoint(self, model, trial, metrics=None):
+    '''def _save_checkpoint(self, model, trial, metrics=None):
         # Determine the checkpoint directory
         checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
         run_dir = self._get_output_dir(trial=trial)
@@ -539,4 +539,4 @@ class LLaVaORPOTrainer(LLaVATrainer):
         Override the save_model method to use our custom saving logic
         """
         output_dir = output_dir if output_dir is not None else self.args.output_dir
-        self.save_model_and_state(output_dir)
+        self.save_model_and_state(output_dir)'''

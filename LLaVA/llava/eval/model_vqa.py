@@ -29,9 +29,22 @@ def get_chunk(lst, n, k):
 def eval_model(args):
     # Model
     disable_torch_init()
+    model_name = None
     model_path = os.path.expanduser(args.model_path)
-    model_name = get_model_name_from_path(model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
+    if model_path.endswith("/"):
+        model_path = model_path[:-1]
+    if model_name is None:
+        model_paths = model_path.split("/")
+        if model_paths[-1].startswith('checkpoint-'):
+            model_name = model_paths[-2] + "_" + model_paths[-1]
+        else:
+            model_name = model_paths[-1]
+    else:
+        model_name = model_name
+    tokenizer, model, image_processor, context_len = load_pretrained_model(
+        model_path, args.model_base, model_name, use_flash_attn=True)
+    #model_name = get_model_name_from_path(model_path)
+    #tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
 
     questions = [json.loads(q) for q in open(os.path.expanduser(args.question_file), "r")]
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
@@ -90,7 +103,7 @@ if __name__ == "__main__":
     parser.add_argument("--image-folder", type=str, default="")
     parser.add_argument("--question-file", type=str, default="tables/question.jsonl")
     parser.add_argument("--answers-file", type=str, default="answer.jsonl")
-    parser.add_argument("--conv-mode", type=str, default="llava_v1")
+    parser.add_argument("--conv-mode", type=str, default="mistral_instruct")
     parser.add_argument("--num-chunks", type=int, default=1)
     parser.add_argument("--chunk-idx", type=int, default=0)
     parser.add_argument("--temperature", type=float, default=0.2)

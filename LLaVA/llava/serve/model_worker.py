@@ -59,7 +59,7 @@ class ModelWorker:
                 self.model_name = model_paths[-1]
         else:
             self.model_name = model_name
-
+        
         self.device = device
         logger.info(f"Loading the model {self.model_name} on worker {worker_id} ...")
         self.tokenizer, self.model, self.image_processor, self.context_len = load_pretrained_model(

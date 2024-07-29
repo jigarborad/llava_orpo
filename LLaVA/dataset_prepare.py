@@ -23,7 +23,7 @@ def download_and_prepare_dataset(dataset_name, base_dir='playground/data'):
     converted_data = []
     for split in dataset.keys():
         for idx, item in enumerate(tqdm(dataset[split], desc=f"Processing {split}")):
-          if idx<1000:
+          if idx<100:
             # Prepare conversation format
             chosen_conv = [
                 {"from": "human", "value": item['question']},
