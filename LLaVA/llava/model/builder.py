@@ -57,8 +57,12 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
             print('Loading LLaVA from base model...')
             if 'mistral' in model_name.lower():
+                from llava.model.language_model.llava_mistral import LlavaMistralConfig
+                lora_cfg_pretrained = LlavaMistralConfig.from_pretrained(model_path)
                 model = LlavaMistralForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
             else:
+                from llava.model.language_model.llava_llama import LlavaConfig
+                lora_cfg_pretrained = LlavaConfig.from_pretrained(model_path)
                 model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=lora_cfg_pretrained, **kwargs)
             token_num, tokem_dim = model.lm_head.out_features, model.lm_head.in_features
             if model.lm_head.weight.shape[0] != token_num:

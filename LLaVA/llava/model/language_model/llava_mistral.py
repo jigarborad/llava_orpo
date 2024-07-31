@@ -29,7 +29,7 @@ from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
 
 class LlavaMistralConfig(MistralConfig):
-    model_type = "llava_mistral"
+    model_type = "mistral"
 
 
 class LlavaMistralModel(LlavaMetaModel, MistralModel):
@@ -154,5 +154,5 @@ class LlavaMistralForCausalLM(MistralForCausalLM, LlavaMetaForCausalLM):
             inputs['image_sizes'] = image_sizes
         return inputs
 
-AutoConfig.register("llava_mistral", LlavaMistralConfig)
+AutoConfig.register("mistral", LlavaMistralConfig)
 AutoModelForCausalLM.register(LlavaMistralConfig, LlavaMistralForCausalLM)
