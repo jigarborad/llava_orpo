@@ -14,7 +14,6 @@ deepspeed llava/train/train_mem.py \
     --model_name_or_path liuhaotian/llava-v1.6-mistral-7b \
     --version v1 \
     --task ORPO \
-    --orpo_use_average False \
     --orpo_beta 0.1 \
     --data_path ${DATA_PATH} \
     --image_folder ${IMAGE_FOLDER} \

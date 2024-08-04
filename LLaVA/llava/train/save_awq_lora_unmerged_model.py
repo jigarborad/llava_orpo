@@ -22,10 +22,9 @@ def save_full_awq_model():
     # Save the merged full-sized model
     merged_output_dir = os.path.join(model_path, 'merged_model')
     os.makedirs(merged_output_dir, exist_ok=True)
-    #model.save_pretrained(merged_output_dir)
+    model.save_pretrained(merged_output_dir)
     quant_config = { "zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "GEMM" }
     print("Saving AWQ model...")
-    model.config.architectures = "MistralForCausalLM"
     # Quantize the merged model with AWQ
     awq_model = AutoAWQForCausalLM.from_pretrained(merged_output_dir, torch_dtype=torch.float16)
     awq_model.quantize(tokenizer,quant_config)  # You can adjust the number of bits as needed

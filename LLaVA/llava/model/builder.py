@@ -25,7 +25,7 @@ from awq import AutoAWQForCausalLM
 
 def load_pretrained_model(model_path, model_base, model_name, quant_method=None, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", use_flash_attn=False, **kwargs):
     kwargs = {"device_map": device_map, **kwargs}
-
+    print(model_name)
     if device != "cuda":
         kwargs['device_map'] = {"": device}
 
@@ -50,7 +50,7 @@ def load_pretrained_model(model_path, model_base, model_name, quant_method=None,
     if quant_method == "awq" and os.path.isfile(os.path.join(model_path, 'model.safetensors')):
         print('Loading AWQ model...')
         tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
-        model = AutoAWQForCausalLM.from_quantized(model_path, **kwargs)
+        model = AutoAWQForCausalLM.from_quantized(model_path, "model.safetensors",**kwargs)
 
     elif 'llava' in model_name.lower():
         
@@ -162,6 +162,7 @@ def load_pretrained_model(model_path, model_base, model_name, quant_method=None,
     image_processor = None
 
     if 'llava' in model_name.lower():
+        print("Loading Image Processor")
         mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
         mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
         if mm_use_im_patch_token:
